@@ -36,6 +36,8 @@ from builtins import input
 import datetime
 import matplotlib
 import struct
+from collections import defaultdict
+import pprint
 
 grui = []
 flightmodes = None
@@ -1144,6 +1146,89 @@ def cmd_mission(args):
             w.param1, w.param2, w.param3, w.param4,
             w.x, w.y, w.z, w.autocontinue))
     mestate.mlog.rewind()
+
+def cmd_auto(args):
+    '''Autoanalyze a log file'''
+    global xlimits
+
+    #TODO: Understand different operations, for now maximum and minimum of all fields of a specific message
+    #TODO: Check if log is loaded
+    if len(args) > 0:
+        wildcard = args[0]
+    else:
+        print("Usage: auto PATTERN")
+        return
+    mlog = mestate.mlog
+    mlog.rewind()
+    types = []
+    for p in wildcard.split(','):
+        for t in mlog.name_to_id.keys():
+            if fnmatch.fnmatch(t, p):
+                types.extend([t])
+
+    #create dictionary to hold min/max values and corresponding timestamps
+    min_max_values = defaultdict(lambda: defaultdict(lambda: {'min': float('inf'), 'max': float('-inf'), 'min_time': None, 'max_time': None}))
+    excluded_fields = {'mavpackettype', 'TimeUS', 'I'} #fields that are for statistic purposes and don't need to be min/maxed 
+
+    while True:
+        msg = mlog.recv_match(type=types, condition=mestate.settings.condition)
+        if msg is None:
+            break
+        in_range = xlimits.timestamp_in_range(msg._timestamp)
+        if in_range < 0:
+            continue
+        if in_range > 0:
+            continue
+    
+        # print(msg)
+        # print("type: %s"%type(msg))  
+        # print("type: %s"% msg.get_type())
+        # print("fieldnames: %s"% msg.get_fieldnames())
+        # for key, value in msg.to_dict().items():
+        #     print(f"Key: {key}, Value: {value}")
+
+        #we get all the messages here which match the specified wildcards
+        ins_value = 0 #initialize to save everything that doesn't have an instance field at 0
+        #see if there is an instance field (e.g. for IMUs)
+        instance_field = getattr(msg,'instance_field',None)
+        if instance_field is None and hasattr(msg,'fmt'):
+            instance_field = getattr(msg.fmt,'instance_field')
+        if instance_field is not None:
+            ins_value = getattr(msg,instance_field,None)
+            if ins_value is None: 
+                    continue
+            
+        # Get the names of all fields in the message
+        fields = msg.get_fieldnames()
+        # go through all fields and check min/max
+        for field in fields:
+            #skip excluded fields
+            if field in excluded_fields:
+                continue
+            value = getattr(msg, field)
+            # Update min and max values
+            if value < min_max_values[ins_value][field]['min']:
+                min_max_values[ins_value][field]['min'] = value
+                min_max_values[ins_value][field]['min_time'] = datetime.datetime.fromtimestamp(msg._timestamp).isoformat()
+            if value > min_max_values[ins_value][field]['max']:
+                min_max_values[ins_value][field]['max'] = value
+                min_max_values[ins_value][field]['max_time'] = datetime.datetime.fromtimestamp(msg._timestamp).isoformat()
+        
+
+        # print("%s %s" % (timestring(msg), msg))
+    
+    # Print header
+    print('Instance\tField\tMin\tMin_Time\tMax\tMax_Time')
+    # Print data
+    for instance, fields in min_max_values.items():
+        for field, values in fields.items():
+            print(f'{instance}\t{field}\t{values["min"]}\t{values["min_time"]}\t{values["max"]}\t{values["max_time"]}')
+    # pp = pprint.PrettyPrinter(indent=4)
+
+    # # Pretty print the min_max_values dict
+    # pp.pprint(min_max_values)
+    mlog.rewind()
+    
     
 def cmd_devid(args):
     '''show parameters'''
@@ -1350,6 +1435,7 @@ command_map = {
     'dump'       : (cmd_dump,      'dump messages from log'),
     'file'       : (cmd_file,      'show files'),
     'mission'    : (cmd_mission,   'show mission'),
+    'auto'       : (cmd_auto,'autoanalyze a file '),
     }
 
 def progress_bar(pct):
